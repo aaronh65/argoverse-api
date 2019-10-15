@@ -1,2 +1,4 @@
 interesting sequences:
 sample 4
+val 25573
+val 9218
