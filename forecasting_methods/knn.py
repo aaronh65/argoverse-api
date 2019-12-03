@@ -121,14 +121,17 @@ def smooth_prediction(predict_traj, agent_traj, num_pts=8):
     predict_traj += offset
     return predict_traj
 
-def get_multiple_forecasts(agent_traj, lookup, k=6, plot=False, is_test=False):
+def get_multiple_forecasts(agent_traj, city, lookup, map_info, num_preds=6, plot=False, is_test=False):
     norm_agent_traj = normalize_trajectory(agent_traj)
-    distances, top_k_idxs = get_top_k(norm_agent_traj, lookup, k=6)
-    predictions = [None] * k
+    distances, top_k_idxs = get_top_k(norm_agent_traj, lookup, k=10000)
+    predictions = list()
     origin_agent_traj = agent_traj - agent_traj[0]
     agent_dir = origin_agent_traj[19] - origin_agent_traj[0]
     agent_dir /= np.linalg.norm(agent_dir)
     agent_dx, agent_dy = agent_dir
+    city_map, city_transform = map_info[city]['map'], map_info[city]['transform']
+    backup = list()
+    
     for idx, k in enumerate(top_k_idxs):
         predict_traj = lookup[k]
         # using cosine dot product relation to determine angular difference between trajectories
@@ -138,22 +141,20 @@ def get_multiple_forecasts(agent_traj, lookup, k=6, plot=False, is_test=False):
         rot_mat = ((pred_dx*agent_dx + pred_dy*agent_dy, -(pred_dx*agent_dy-pred_dy*agent_dx)),
                    (pred_dx*agent_dy - agent_dx*pred_dy, pred_dx*agent_dx + pred_dy*agent_dy))
         rot_mat = np.asarray(rot_mat)
-        '''
-        arg = np.dot(predict_traj[19], origin_agent_traj[19])/ np.linalg.norm(predict_traj[19])/np.linalg.norm(origin_agent_traj[19])
-        theta = np.arccos(np.clip(arg, -1.0, 1.0))
-        if origin_agent_traj[19,1] < 0:
-            # rotate in negative angle direction (cw)
-            theta *= -1
-        rot_mat = ((np.cos(theta), -np.sin(theta)), (np.sin(theta), np.cos(theta)))
-        '''
         t_predict_traj = np.matmul(rot_mat, predict_traj.T).T + agent_traj[0]
         #if np.linalg.norm(t_predict_traj[20]-agent_traj[19]) > 1:
         t_predict_traj = smooth_prediction(t_predict_traj, agent_traj)
         t_predict_traj[:20] = agent_traj[:20]
-        predictions[idx] = t_predict_traj
+        if len(backup) < num_preds:
+            backup.append(t_predict_traj)
+        if traj_pts_inside_da(t_predict_traj, city_map, city_transform) >= 45:
+            predictions.append(t_predict_traj)
+            if len(predictions) >= num_preds:
+                break
+    diff = num_preds - len(predictions)
+    for i in range(diff):
+        predictions.append(backup[i])
     predictions = np.asarray(predictions)
-    
-    #metrics = compute_metrics(predictions, test_seq)
     if not is_test:
         metrics = compute_metrics(predictions, agent_traj)
         fde_idx, fde, ade, mr = metrics
@@ -161,12 +162,12 @@ def get_multiple_forecasts(agent_traj, lookup, k=6, plot=False, is_test=False):
         metrics = None
     if plot:
         boldwidth=3
-        fig, ax = plt.subplots(nrows=2, ncols=1, figsize=(10,10))
+        fig, ax = plt.subplots(nrows=1, ncols=1, figsize=(10,10))
         #ax = plt.gca().set_aspect('equal')
         # plot starting point
-        ax[0].set_title('predictions')
-        ax[0].plot(agent_traj[0,0], agent_traj[0,1],'-o', c='r')
-        ax[0].plot(agent_traj[:,0], agent_traj[:,1],c='r',linewidth=boldwidth)
+        ax.set_title('predictions')
+        ax.plot(agent_traj[0,0], agent_traj[0,1],'-o', c='r')
+        ax.plot(agent_traj[:,0], agent_traj[:,1],c='r',linewidth=boldwidth)
         for idx, prediction in enumerate(predictions):
             if not is_test:
                 linewidth = boldwidth if idx == fde_idx else 1
@@ -174,8 +175,8 @@ def get_multiple_forecasts(agent_traj, lookup, k=6, plot=False, is_test=False):
             else:
                 linewidth = 1
                 linecolor = np.random.random(3,)
-            #ax[0].plot(prediction[19,0], prediction[19,1],'-o',c=linecolor)
-            ax[0].plot(prediction[19:,0], prediction[19:,1],c=linecolor, linewidth=linewidth)
+            ax.plot(prediction[19:,0], prediction[19:,1],c=linecolor, linewidth=linewidth)
+        '''
         ax[1].set_title('normalized predictions')
         ax[1].plot(norm_agent_traj[0,0], norm_agent_traj[0,1],'-o', c='r')
         ax[1].plot(norm_agent_traj[:,0], norm_agent_traj[:,1],c='r',linewidth=boldwidth)
@@ -189,18 +190,17 @@ def get_multiple_forecasts(agent_traj, lookup, k=6, plot=False, is_test=False):
             norm_prediction = lookup[k]
             #ax[1].plot(norm_prediction[19,0], norm_prediction[19,1],'-o',c=linecolor)
             ax[1].plot(norm_prediction[:,0], norm_prediction[:,1],c=linecolor, linewidth=linewidth)
+        '''
     return top_k_idxs, predictions, metrics
 
-def get_multiple_forecasts_norm(agent_traj, city, norm_train_trajs, train_nt_dists, agent_nt, avm, map_info, abs_k=-1, norm_k=6, plot=False, is_test=False):
+def get_multiple_forecasts_norm(agent_traj, city, norm_train_trajs, train_nt_dists, agent_nt, avm, map_info, num_preds=6, plot=False, is_test=False):
     # init predictions and get top k matches
     predictions = list()
     norm_agent_traj = normalize_trajectory(agent_traj)
-    norm_dists, top_k_abs_idxs = get_top_k(norm_agent_traj, norm_train_trajs, k=abs_k)
+    norm_dists, top_k_abs_idxs = get_top_k(norm_agent_traj, norm_train_trajs, k=len(norm_agent_traj))
     normals = get_norms(train_nt_dists[top_k_abs_idxs])
     agent_n = agent_nt[0][:,0]
-    if abs_k == -1:
-        abs_k = len(normals)
-    nt_dists, top_k_norm_idxs = get_top_k(agent_n, normals, k=abs_k)
+    nt_dists, top_k_norm_idxs = get_top_k(agent_n, normals, k=10000)
     top_k_idxs = top_k_abs_idxs[top_k_norm_idxs]
     city_map, city_transform = map_info[city]['map'], map_info[city]['transform']
     
@@ -209,6 +209,7 @@ def get_multiple_forecasts_norm(agent_traj, city, norm_train_trajs, train_nt_dis
     agent_dir = origin_agent_traj[19] - origin_agent_traj[0]
     agent_dir /= np.linalg.norm(agent_dir)
     agent_dx, agent_dy = agent_dir
+    backup = list()
     for idx, k in enumerate(top_k_idxs):
         predict_traj = norm_train_trajs[k]
         # using cosine dot product relation to determine angular difference between trajectories
@@ -218,32 +219,22 @@ def get_multiple_forecasts_norm(agent_traj, city, norm_train_trajs, train_nt_dis
         rot_mat = ((pred_dx*agent_dx + pred_dy*agent_dy, -(pred_dx*agent_dy-pred_dy*agent_dx)),
                    (pred_dx*agent_dy - agent_dx*pred_dy, pred_dx*agent_dx + pred_dy*agent_dy))
         rot_mat = np.asarray(rot_mat)
-        '''
-        arg = np.dot(predict_traj[19], origin_agent_traj[19])/ np.linalg.norm(predict_traj[19])/np.linalg.norm(origin_agent_traj[19])
-        theta = np.arccos(np.clip(arg, -1.0, 1.0))
-        if origin_agent_traj[19,1] < 0:
-            # rotate in negative angle direction (cw)
-            theta *= -1
-        rot_mat = ((np.cos(theta), -np.sin(theta)), (np.sin(theta), np.cos(theta)))
-        '''
         t_predict_traj = np.matmul(rot_mat, predict_traj.T).T + agent_traj[0]
         #if np.linalg.norm(t_predict_traj[20]-agent_traj[19]) > 1:
         t_predict_traj = smooth_prediction(t_predict_traj, agent_traj)
         t_predict_traj[:20] = agent_traj[:20]
-        if traj_pts_inside_da(t_predict_traj, city_map, city_transform) > 45:
-            
+        if len(backup) < num_preds:
+            backup.append(t_predict_traj)
+        if traj_pts_inside_da(t_predict_traj, city_map, city_transform) >= 45:
             predictions.append(t_predict_traj)
-            if len(predictions) == norm_k:
+            if len(predictions) == num_preds:
                 break
-                
-        if idx > 1000:
-            if len(predictions) > 0:
-                diff = norm_k - len(predictions)
-                for i in range(diff):
-                    predictions.append(predictions[0])
-                break
+#     print(idx)
+    diff = num_preds - len(predictions)
+    for i in range(diff):
+        predictions.append(backup[i])
     predictions = np.asarray(predictions)
-    
+    print(predictions.shape)
     #metrics = compute_metrics(predictions, test_seq)
     if not is_test:
         metrics = compute_metrics(predictions, agent_traj)
@@ -252,12 +243,12 @@ def get_multiple_forecasts_norm(agent_traj, city, norm_train_trajs, train_nt_dis
         metrics = None
     if plot:
         boldwidth=3
-        fig, ax = plt.subplots(nrows=2, ncols=1, figsize=(10,10))
+        fig, ax = plt.subplots(nrows=1, ncols=1, figsize=(10,10))
         #ax = plt.gca().set_aspect('equal')
         # plot starting point
-        ax[0].set_title('predictions')
-        ax[0].plot(agent_traj[0,0], agent_traj[0,1],'-o', c='r')
-        ax[0].plot(agent_traj[:,0], agent_traj[:,1],c='r',linewidth=boldwidth)
+        ax.set_title('predictions')
+        ax.plot(agent_traj[0,0], agent_traj[0,1],'-o', c='r')
+        ax.plot(agent_traj[:,0], agent_traj[:,1],c='r',linewidth=boldwidth)
         for idx, prediction in enumerate(predictions):
             if not is_test:
                 linewidth = boldwidth if idx == fde_idx else 1
@@ -266,7 +257,8 @@ def get_multiple_forecasts_norm(agent_traj, city, norm_train_trajs, train_nt_dis
                 linewidth = 1
                 linecolor = np.random.random(3,)
             #ax[0].plot(prediction[19,0], prediction[19,1],'-o',c=linecolor)
-            ax[0].plot(prediction[19:,0], prediction[19:,1],c=linecolor, linewidth=linewidth)
+            ax.plot(prediction[19:,0], prediction[19:,1],c=linecolor, linewidth=linewidth)
+            '''
         ax[1].set_title('normalized predictions')
         ax[1].plot(norm_agent_traj[0,0], norm_agent_traj[0,1],'-o', c='r')
         ax[1].plot(norm_agent_traj[:,0], norm_agent_traj[:,1],c='r',linewidth=boldwidth)
@@ -280,4 +272,5 @@ def get_multiple_forecasts_norm(agent_traj, city, norm_train_trajs, train_nt_dis
             norm_prediction = norm_train_trajs[k]
             #ax[1].plot(norm_prediction[19,0], norm_prediction[19,1],'-o',c=linecolor)
             ax[1].plot(norm_prediction[:,0], norm_prediction[:,1],c=linecolor, linewidth=linewidth)
+            '''
     return top_k_idxs, predictions, metrics
